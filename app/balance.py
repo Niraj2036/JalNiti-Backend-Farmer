@@ -47,11 +47,11 @@ CATEGORY_FACTOR = {
 
 LITHOLOGY_FACTOR = {
     1: 1.00,   # Alluvium
-    2: 0.90,   # Sandstone / Sedimentary
-    3: 0.80,   # Limestone
-    4: 0.750,   # Granite / Gneiss
-    5: 0.72,   # Basalt
-    0: 0.70    # Unknown
+    2: 1.00,   # Sandstone / Sedimentary
+    3: 1.0,   # Limestone
+    4: 1.0,   # Granite / Gneiss
+    5: 1.0,   # Basalt
+    0: 1.0    # Unknown
 }
 
 LIFECYCLE_FACTOR = 0.70  # one crop lifecycle
@@ -62,14 +62,15 @@ LIFECYCLE_FACTOR = 0.70  # one crop lifecycle
 # -------------------------------------------------
 
 def slope_factor(slope_deg):
-    if slope_deg <= 2:
-        return 1.0
-    elif slope_deg <= 5:
-        return 0.85
-    elif slope_deg <= 10:
-        return 0.65
-    else:
-        return 0.40
+    # if slope_deg <= 2:
+    #     return 1.0
+    # elif slope_deg <= 5:
+    #     return 0.85
+    # elif slope_deg <= 10:
+    #     return 0.65
+    # else:
+    #     return 0.40
+    return 1.0
    
 
 
