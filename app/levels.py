@@ -212,6 +212,8 @@ def get_plot_info():
 
     return jsonify({
         "latitudeApprox": lat,
+        "latitude": lat,
+        "longitude": lng,
         "longitudeApprox": lng,
         "owners": owners
     })
