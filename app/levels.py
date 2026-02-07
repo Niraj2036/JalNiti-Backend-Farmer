@@ -1,4 +1,5 @@
 import requests
+import re
 from flask import Blueprint, request, jsonify
 
 levels_bp = Blueprint("levels", __name__)
@@ -20,29 +21,31 @@ COMMON_HEADERS = {
     "Referer": "https://mahabhunakasha.mahabhumi.gov.in/27/index.html"
 }
 
-
 # -------------------------------------------------
 # Initialize session (creates JSESSIONID)
 # -------------------------------------------------
 def init_bhunaksha_session():
     init_url = "https://mahabhunakasha.mahabhumi.gov.in/27/index.html"
-
-    print("\n🔹 Initializing Bhunaksha session")
-    res = session.get(init_url, headers=COMMON_HEADERS, timeout=30)
-
-    print("Init status:", res.status_code)
-    print("Cookies:", session.cookies.get_dict())
-
+    session.get(init_url, headers=COMMON_HEADERS, timeout=30)
 
 # -------------------------------------------------
-# Helper: fetch hierarchy levels
+# Safe JSON parser (handles expired session / HTML)
+# -------------------------------------------------
+def safe_json(res):
+    try:
+        return res.json()
+    except Exception:
+        init_bhunaksha_session()
+        return None
+
+# -------------------------------------------------
+# Helper: fetch hierarchy levels safely
 # -------------------------------------------------
 def fetch_level(level, codes=""):
     if not session.cookies:
         init_bhunaksha_session()
 
     url = f"{BASE_URL}/ListsAfterLevelGeoref"
-
     data = {
         "state": STATE,
         "level": str(level),
@@ -50,95 +53,86 @@ def fetch_level(level, codes=""):
         "hasmap": "true"
     }
 
-    print("\n==============================")
-    print("POST ListsAfterLevelGeoref")
-    print("Payload:", data)
-    print("Cookies:", session.cookies.get_dict())
-
     try:
         res = session.post(url, data=data, headers=COMMON_HEADERS, timeout=30)
-
-        print("Status:", res.status_code)
-        print("Content-Type:", res.headers.get("Content-Type"))
-        print("Raw response (300 chars):")
-        print(res.text[:300])
-
         if res.status_code != 200:
-            print("❌ Bhunaksha rejected request")
             return []
 
-        json_data = res.json()
-
-        if isinstance(json_data, list) and len(json_data) > 0:
-            print("✅ Returned rows:", len(json_data[0]))
+        json_data = safe_json(res)
+        if (
+            isinstance(json_data, list)
+            and len(json_data) > 0
+            and isinstance(json_data[0], list)
+        ):
             return json_data[0]
 
-        print("⚠️ Empty JSON structure")
         return []
-
-    except Exception as e:
-        print("🔥 Exception:", e)
+    except Exception:
         return []
-
 
 # -------------------------------------------------
-# 1️⃣ Rural / Urban → Districts
-# GET /api/levels/districts?area=R
+# Survey sorting (handles 100/A, 100/1, etc.)
+# -------------------------------------------------
+def survey_sort_key(s):
+    if not isinstance(s, str):
+        return (0, "")
+
+    parts = s.split("/", 1)
+    try:
+        main = int(parts[0])
+    except ValueError:
+        main = 0
+
+    suffix = parts[1] if len(parts) > 1 else ""
+    return (main, suffix)
+
+# -------------------------------------------------
+# 1️⃣ Districts
 # -------------------------------------------------
 @levels_bp.route("/districts", methods=["GET"])
 def get_districts():
-    area = request.args.get("area")  # R or U
-
+    area = request.args.get("area")
     if area not in ["R", "U"]:
         return jsonify({"error": "area must be R or U"}), 400
 
-    districts = fetch_level(level=1, codes=f"{area},")
-
+    districts = fetch_level(1, f"{area},")
     return jsonify([
         {"code": d["code"], "name": d["value"]}
         for d in districts
     ])
 
-
 # -------------------------------------------------
-# 2️⃣ District → Talukas
-# GET /api/levels/talukas?area=R&districtCode=19
+# 2️⃣ Talukas
 # -------------------------------------------------
 @levels_bp.route("/talukas", methods=["GET"])
 def get_talukas():
     area = request.args.get("area")
-    district_code = request.args.get("districtCode")
+    district = request.args.get("districtCode")
 
-    if not area or not district_code:
+    if not area or not district:
         return jsonify({"error": "area and districtCode required"}), 400
 
-    talukas = fetch_level(
-        level=2,
-        codes=f"{area},{district_code},"
-    )
-
+    talukas = fetch_level(2, f"{area},{district.zfill(2)},")
     return jsonify([
         {"code": t["code"], "name": t["value"]}
         for t in talukas
     ])
 
-
 # -------------------------------------------------
-# 3️⃣ Taluka → Villages
-# GET /api/levels/villages?area=R&districtCode=19&talukaCode=02
+# 3️⃣ Villages
 # -------------------------------------------------
 @levels_bp.route("/villages", methods=["GET"])
 def get_villages():
     area = request.args.get("area")
-    district_code = request.args.get("districtCode")
-    taluka_code = request.args.get("talukaCode")
+    district = request.args.get("districtCode")
+    taluka = request.args.get("talukaCode")
 
-    if not all([area, district_code, taluka_code]):
+    if not all([area, district, taluka]):
         return jsonify({"error": "area, districtCode, talukaCode required"}), 400
 
     villages = fetch_level(
-        level=3,
-        codes=f"{area},{district_code},{taluka_code},"
+        3,
+        f"{area},{district.zfill(2)},{taluka.zfill(2)},"
     )
 
     return jsonify([
@@ -146,162 +140,118 @@ def get_villages():
         for v in villages
     ])
 
-
 # -------------------------------------------------
-# 4️⃣ Village → Survey Numbers
-# GET /api/levels/surveys?villageCode=2719...
+# 4️⃣ Surveys
 # -------------------------------------------------
 @levels_bp.route("/surveys", methods=["GET"])
 def get_surveys():
     area = request.args.get("area")
-    district_code = request.args.get("districtCode")
-    taluka_code = request.args.get("talukaCode")
-    village_code = request.args.get("villageCode")
+    district = request.args.get("districtCode")
+    taluka = request.args.get("talukaCode")
+    village = request.args.get("villageCode")
 
-    if not all([area, district_code, taluka_code, village_code]):
-        return jsonify({
-            "error": "area, districtCode, talukaCode, villageCode required"
-        }), 400
+    if not all([area, district, taluka, village]):
+        return jsonify({"error": "all codes required"}), 400
 
     if not session.cookies:
         init_bhunaksha_session()
 
-    if area == "R":
-        loged_levels = f"RVM{district_code}{taluka_code}{village_code}"
-    else:
-        loged_levels = f"UCM{district_code}{taluka_code}{village_code}"
+    prefix = "RVM" if area == "R" else "UCM"
+    loged_levels = f"{prefix}{district.zfill(2)}{taluka.zfill(2)}{village}"
 
     url = f"{BASE_URL}/kidelistFromGisCodeMH"
-    data = {
-        "state": STATE,
-        "logedLevels": loged_levels
-    }
+    data = {"state": STATE, "logedLevels": loged_levels}
 
     res = session.post(url, data=data, headers=COMMON_HEADERS, timeout=30)
-
     if res.status_code != 200:
         return jsonify([])
 
-    raw_surveys = res.json()
+    raw = safe_json(res)
+    if not isinstance(raw, list):
+        return jsonify([])
 
-    # 🔥 NUMERIC SORT
-    sorted_surveys = sorted(raw_surveys, key=lambda x: int(x))
+    clean = [s for s in raw if isinstance(s, str) and s.strip()]
+    clean.sort(key=survey_sort_key)
 
-    return jsonify(sorted_surveys)
+    return jsonify(clean)
 
+# -------------------------------------------------
+# 5️⃣ Plot Info
+# -------------------------------------------------
 @levels_bp.route("/plot-info", methods=["GET"])
 def get_plot_info():
-    area = request.args.get("area")                    # R / U
-    district_code = request.args.get("districtCode")
-    taluka_code = request.args.get("talukaCode")
-    village_gis_code = request.args.get("villageGisCode")
+    area = request.args.get("area")
+    district = request.args.get("districtCode")
+    taluka = request.args.get("talukaCode")
+    village = request.args.get("villageGisCode")
     plot_no = request.args.get("plotNo")
 
-    if not all([area, district_code, taluka_code, village_gis_code, plot_no]):
-        return jsonify({
-            "error": "area, districtCode, talukaCode, villageGisCode, plotNo required"
-        }), 400
+    if not all([area, district, taluka, village, plot_no]):
+        return jsonify({"error": "missing parameters"}), 400
 
-    if not session.cookies:
-        init_bhunaksha_session()
+    prefix = "RVM" if area == "R" else "UCM"
+    giscode = f"{prefix}{district.zfill(2)}{taluka.zfill(2)}{village}"
 
-    # -----------------------------
-    # Construct giscode
-    # -----------------------------
-    if area == "R":
-        giscode = f"RVM{district_code}{taluka_code}{village_gis_code}"
-    elif area == "U":
-        giscode = f"UCM{district_code}{taluka_code}{village_gis_code}"
-    else:
-        return jsonify({"error": "area must be R or U"}), 400
-
-    # -----------------------------
-    # 1️⃣ Call getPlotInfo
-    # -----------------------------
-    plot_info_url = "https://mahabhunakasha.mahabhumi.gov.in/rest/MapInfo/getPlotInfo"
-
-    plot_payload = {
-        "state": "27",
+    plot_url = "https://mahabhunakasha.mahabhumi.gov.in/rest/MapInfo/getPlotInfo"
+    payload = {
+        "state": STATE,
         "giscode": giscode,
         "plotno": plot_no,
         "srs": "4326"
     }
 
-    res = session.post(plot_info_url, data=plot_payload, headers=COMMON_HEADERS, timeout=30)
+    res = session.post(plot_url, data=payload, headers=COMMON_HEADERS, timeout=30)
+    plot_json = safe_json(res)
 
-    if res.status_code != 200:
-        return jsonify({})
+    if not plot_json or "plotid" not in plot_json:
+        return jsonify({"error": "Plot not found"}), 404
 
-    plot_json = res.json()
-
-    plotid = plot_json.get("plotid")
-    if not plotid:
-        return jsonify({})
-
-    # -----------------------------
-    # 2️⃣ Call getExtentGeoref
-    # -----------------------------
-    latitude, longitude = fetch_lat_lng_from_extent(giscode, plotid)
-
-    # -----------------------------
-    # 3️⃣ Extract owners
-    # -----------------------------
+    plotid = plot_json["plotid"]
+    lat, lng = fetch_lat_lng_from_extent(giscode, plotid)
     owners = extract_owners(plot_json)
 
-    # -----------------------------
-    # Final response
-    # -----------------------------
     return jsonify({
-        "latitude": latitude,
-        "longitude": longitude,
+        "latitudeApprox": lat,
+        "longitudeApprox": lng,
         "owners": owners
     })
 
-import re
-
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
 def extract_owners(plot_json):
     owners = []
-    info_text = plot_json.get("info", "")
-
-    blocks = info_text.split("---------------------------------")
+    text = plot_json.get("info", "")
+    blocks = text.split("---------------------------------")
 
     for block in blocks:
-        owner_match = re.search(r"Owner Name\s*:\s*(.+)", block)
-        area_match = re.search(r"Total Area\s*:\s*([\d.]+)", block)
-
-        if owner_match and area_match:
+        o = re.search(r"Owner Name\s*:\s*(.+)", block)
+        a = re.search(r"Total Area\s*:\s*([\d.]+)", block)
+        if o and a:
             owners.append({
-                "ownerName": owner_match.group(1).strip(),
-                "totalArea": area_match.group(1).strip()
+                "ownerName": o.group(1).strip(),
+                "totalArea": a.group(1).strip()
             })
-
     return owners
+
 def fetch_lat_lng_from_extent(giscode, plotid):
     url = "https://mahabhunakasha.mahabhumi.gov.in/rest/MapInfo/getExtentGeoref"
-
     data = {
-        "state": "27",
+        "state": STATE,
         "giscode": giscode,
         "plotid": plotid,
         "srs": "4326"
     }
 
     res = session.post(url, data=data, headers=COMMON_HEADERS, timeout=30)
+    extent = safe_json(res)
 
-    if res.status_code != 200:
+    if not extent:
         return None, None
 
-    extent = res.json()
-
-    xmin = extent.get("xmin")
-    xmax = extent.get("xmax")
-    ymin = extent.get("ymin")
-    ymax = extent.get("ymax")
-
-    if None in [xmin, xmax, ymin, ymax]:
+    try:
+        lng = (extent["xmin"] + extent["xmax"]) / 2
+        lat = (extent["ymin"] + extent["ymax"]) / 2
+        return lat, lng
+    except Exception:
         return None, None
-
-    longitude = (xmin + xmax) / 2
-    latitude = (ymin + ymax) / 2
-
-    return latitude, longitude
