@@ -4,6 +4,7 @@ from app.levels import levels_bp
 from app.balance import balance_bp
 from app.crop import crop_bp
 from app.sowing import sowing_bp
+from app.crop_ai import crop_ai_bp
 app = Flask(__name__)
 CORS(app)   # allows frontend to call backend
 
@@ -54,6 +55,7 @@ app.register_blueprint(levels_bp, url_prefix="/api/levels")
 app.register_blueprint(balance_bp, url_prefix="/api/balance")
 app.register_blueprint(crop_bp, url_prefix="/api/crop")
 app.register_blueprint(sowing_bp, url_prefix="/api/sowing")
+app.register_blueprint(crop_ai_bp, url_prefix="/api/crop-ai")
 # -----------------------------
 # Run server
 # -----------------------------
